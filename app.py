@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+import ipaddress
+import json
+import os
+import subprocess
+import threading
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse
+
+HOST = os.getenv("LISTEN_HOST", "0.0.0.0")
+PORT = int(os.getenv("LISTEN_PORT", "8080"))
+SECURITY_GROUP_ID = os.environ["SECURITY_GROUP_ID"]
+ZONE = os.getenv("SCW_DEFAULT_ZONE", "fr-par-1")
+SCW = os.getenv("SCW_BIN", "/usr/bin/scw")
+MAX_BODY = 4096
+
+def parse_port_spec(spec):
+    """Parse "22,443,8000-8010" into a set of allowed ports."""
+    ports = set()
+    for token in spec.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "-" in token:
+            start, _, end = token.partition("-")
+            start, end = int(start), int(end)
+        else:
+            start = end = int(token)
+        if not (1 <= start <= end <= 65535):
+            raise RuntimeError(f"invalid port or range in ALLOWED_PORTS: {token!r}")
+        ports.update(range(start, end + 1))
+    return ports
+
+ALLOWED_PORTS = parse_port_spec(os.environ["ALLOWED_PORTS"])
+if not ALLOWED_PORTS:
+    raise RuntimeError("ALLOWED_PORTS must list at least one port or range")
+DEFAULT_PORT = int(os.getenv("DEFAULT_PORT", str(min(ALLOWED_PORTS))))
+if DEFAULT_PORT not in ALLOWED_PORTS:
+    raise RuntimeError(f"DEFAULT_PORT ({DEFAULT_PORT}) must be included in ALLOWED_PORTS")
+CREATED_RULES_LOG = os.getenv("CREATED_RULES_LOG", "created_rules.log")
+
+# Guards rule lookup+create so two concurrent requests for the same
+# brand-new port can't each decide the rule is missing and create a duplicate.
+UPDATE_LOCK = threading.Lock()
+
+def log(message):
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    print(f"{ts} {message}", flush=True)
+
+def run_scw(*args):
+    result = subprocess.run(
+        [SCW, *args, "-o", "json"],
+        capture_output=True, text=True, timeout=20, check=False
+    )
+    if result.returncode != 0:
+        error = result.stderr.strip() or "scw command failed"
+        log(f"SCW_ERROR error={error!r}")
+        raise RuntimeError(error)
+    return json.loads(result.stdout)
+
+def list_rules():
+    log(f"RULES_LIST sg={SECURITY_GROUP_ID}")
+    data = run_scw(
+        "instance", "security-group", "list-rules",
+        f"security-group-id={SECURITY_GROUP_ID}",
+        f"zone={ZONE}",
+    )
+    return data["rules"] if isinstance(data, dict) else data
+
+def _rule_port(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def find_rule(rules, family, port):
+    for rule in rules:
+        if rule.get("direction") != "inbound" or rule.get("protocol") != "TCP":
+            continue
+        if _rule_port(rule.get("dest_port_from")) != port or _rule_port(rule.get("dest_port_to")) != port:
+            continue
+        ip_range = rule.get("ip_range")
+        if not ip_range:
+            continue
+        try:
+            if ipaddress.ip_network(ip_range, strict=False).version != family:
+                continue
+        except ValueError:
+            continue
+        return rule
+    return None
+
+def record_created_rule(rule_id, family, port, cidr):
+    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    line = f"{ts} rule={rule_id} family=IPv{family} port={port} cidr={cidr} sg={SECURITY_GROUP_ID}\n"
+    with open(CREATED_RULES_LOG, "a", encoding="utf-8") as f:
+        f.write(line)
+
+def create_rule(family, port, cidr):
+    log(f"RULE_CREATE_START family={family} port={port} new={cidr!r}")
+    data = run_scw(
+        "instance", "security-group", "create-rule",
+        f"security-group-id={SECURITY_GROUP_ID}",
+        "protocol=TCP", "direction=inbound", "action=accept",
+        f"ip-range={cidr}", f"dest-port-from={port}", f"dest-port-to={port}",
+        f"zone={ZONE}",
+    )
+    rule = data.get("rule", data) if isinstance(data, dict) else data
+    rule_id = rule.get("id") if isinstance(rule, dict) else None
+    log(f"RULE_CREATE_DONE family={family} port={port} new={cidr!r} rule={rule_id}")
+    record_created_rule(rule_id, family, port, cidr)
+
+def update_rule(rule_id, family, port, old_cidr, new_cidr):
+    log(f"RULE_UPDATE_START family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
+    run_scw(
+        "instance", "security-group", "update-rule",
+        f"security-group-id={SECURITY_GROUP_ID}",
+        f"security-group-rule-id={rule_id}",
+        f"ip-range={new_cidr}",
+        f"zone={ZONE}",
+    )
+    log(f"RULE_UPDATE_DONE family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
+
+def ensure_rule(rules, family, port, desired_cidr):
+    # Look up before creating so repeat visits update the same rule instead of piling up new ones.
+    rule = find_rule(rules, family, port)
+    if rule is None:
+        create_rule(family, port, desired_cidr)
+        return f"IPv{family} port {port}: nouvelle règle -> {desired_cidr}"
+    current_cidr = rule.get("ip_range")
+    if current_cidr != desired_cidr:
+        update_rule(rule["id"], family, port, current_cidr, desired_cidr)
+        return f"IPv{family} port {port}: {current_cidr} -> {desired_cidr}"
+    log(f"RULE_NO_CHANGE family={family} port={port} rule={rule['id']}")
+    return None
+
+def validate_ip(value, version):
+    if not isinstance(value, str) or len(value) > 100:
+        raise ValueError("invalid IP")
+    ip = ipaddress.ip_address(value.strip())
+    if ip.version != version:
+        raise ValueError("wrong IP family")
+    return ip
+
+def validate_port(value):
+    if value is None or value == "":
+        return DEFAULT_PORT
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("invalid port")
+    if port not in ALLOWED_PORTS:
+        raise ValueError(f"port not allowed: {port}")
+    return port
+
+def page():
+    return """<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Scaleway IP updater</title>
+<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:60px auto;padding:0 20px;line-height:1.5}#status{white-space:pre-wrap}</style>
+</head>
+<body><h1>Scaleway IP updater</h1><p id="status">Détection des adresses IP…</p>
+<script>
+(async()=>{const s=document.getElementById("status");try{
+const port=new URLSearchParams(location.search).get("port");
+const [a,b]=await Promise.all([
+fetch("https://api4.ipify.org?format=json",{cache:"no-store"}),
+fetch("https://api6.ipify.org?format=json",{cache:"no-store"})
+]);
+if(!a.ok||!b.ok)throw new Error("ipify n'a pas répondu correctement");
+const [{ip:ipv4},{ip:ipv6}]=await Promise.all([a.json(),b.json()]);
+s.textContent="IPv4 : "+ipv4+"\\nIPv6 : "+ipv6+"\\nPort : "+(port||"(défaut)")+"\\n\\nMise à jour du Security Group…";
+const r=await fetch(location.pathname+"/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ipv4,ipv6,port}),cache:"no-store"});
+const d=await r.json();if(!r.ok)throw new Error(d.error||"Erreur serveur");
+s.textContent="IPv4 : "+ipv4+"/32\\nIPv6 : "+ipv6+"/128\\nPort : "+d.port+"\\n\\n"+d.message;
+}catch(e){s.textContent="Erreur : "+e.message}})();
+</script></body></html>"""
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "scaleway-ip-updater/1.1"
+
+    def log_message(self, fmt, *args):
+        log(f"HTTP client={self.address_string()} {fmt % args}")
+
+    def send_json(self, status, payload):
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        path = urlparse(self.path).path.rstrip("/")
+        if path == f"/{SECURITY_GROUP_ID}":
+            log(f"UPDATE_PAGE_REQUEST sg={SECURITY_GROUP_ID}")
+            body = page().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        self.send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        expected = f"/{SECURITY_GROUP_ID}/update"
+        if urlparse(self.path).path.rstrip("/") != expected:
+            self.send_json(404, {"error": "not found"})
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > MAX_BODY:
+            self.send_json(400, {"error": "invalid request body"})
+            return
+        try:
+            payload = json.loads(self.rfile.read(length))
+            ipv4 = validate_ip(payload.get("ipv4"), 4)
+            ipv6 = validate_ip(payload.get("ipv6"), 6)
+            port = validate_port(payload.get("port"))
+            desired_v4, desired_v6 = f"{ipv4}/32", f"{ipv6}/128"
+            log(f"UPDATE_START sg={SECURITY_GROUP_ID} port={port} ipv4={desired_v4!r} ipv6={desired_v6!r}")
+            with UPDATE_LOCK:
+                rules = list_rules()
+                changed = [c for c in (
+                    ensure_rule(rules, 4, port, desired_v4),
+                    ensure_rule(rules, 6, port, desired_v6),
+                ) if c]
+            if changed:
+                message = "Mise à jour effectuée :\n" + "\n".join(changed)
+                log(f"UPDATE_DONE changed={len(changed)} port={port}")
+            else:
+                message = "Aucune modification : les deux IP sont déjà à jour."
+                log(f"UPDATE_DONE changed=0 port={port}")
+            self.send_json(200, {"ok": True, "ipv4": desired_v4, "ipv6": desired_v6, "port": port,
+                                 "changed": bool(changed), "message": message})
+        except (ValueError, KeyError, json.JSONDecodeError) as exc:
+            log(f"UPDATE_INVALID error={str(exc)!r}")
+            self.send_json(400, {"ok": False, "error": str(exc)})
+        except Exception as exc:
+            log(f"UPDATE_FAILED error={str(exc)!r}")
+            self.send_json(502, {"ok": False, "error": "Scaleway update failed"})
+
+if __name__ == "__main__":
+    log(f"START host={HOST!r} port={PORT} zone={ZONE!r} sg={SECURITY_GROUP_ID!r}")
+    log(f"ALLOWED_PORTS={sorted(ALLOWED_PORTS)!r} default={DEFAULT_PORT} created_rules_log={CREATED_RULES_LOG!r}")
+    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
