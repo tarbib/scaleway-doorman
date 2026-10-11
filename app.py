@@ -4,7 +4,8 @@ import json
 import os
 import subprocess
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -16,7 +17,7 @@ SCW = os.getenv("SCW_BIN", "/usr/bin/scw")
 MAX_BODY = 4096
 
 def parse_port_spec(spec):
-    """Parse "22,443,8000-8010" into a set of allowed ports."""
+    """Parse "22,443,8000-8010" into a set of ports."""
     ports = set()
     for token in spec.split(","):
         token = token.strip()
@@ -28,20 +29,19 @@ def parse_port_spec(spec):
         else:
             start = end = int(token)
         if not (1 <= start <= end <= 65535):
-            raise RuntimeError(f"invalid port or range in ALLOWED_PORTS: {token!r}")
+            raise RuntimeError(f"invalid port or range in FORBIDDEN_PORTS: {token!r}")
         ports.update(range(start, end + 1))
     return ports
 
-ALLOWED_PORTS = parse_port_spec(os.environ["ALLOWED_PORTS"])
-if not ALLOWED_PORTS:
-    raise RuntimeError("ALLOWED_PORTS must list at least one port or range")
-DEFAULT_PORT = int(os.getenv("DEFAULT_PORT", str(min(ALLOWED_PORTS))))
-if DEFAULT_PORT not in ALLOWED_PORTS:
-    raise RuntimeError(f"DEFAULT_PORT ({DEFAULT_PORT}) must be included in ALLOWED_PORTS")
+FORBIDDEN_PORTS = parse_port_spec(os.getenv("FORBIDDEN_PORTS", ""))
 CREATED_RULES_LOG = os.getenv("CREATED_RULES_LOG", "created_rules.log")
 
-# Guards rule lookup+create so two concurrent requests for the same
-# brand-new port can't each decide the rule is missing and create a duplicate.
+MAX_DAYS = int(os.getenv("MAX_DAYS", "30"))
+RULE_EXPIRY_FILE = os.getenv("RULE_EXPIRY_FILE", "rule_expirations.json")
+RULE_EXPIRY_INTERVAL = int(os.getenv("RULE_EXPIRY_INTERVAL", "300"))
+
+# Guards rule lookup+create+expiry-bookkeeping so two concurrent requests (or
+# a request and the expiry sweep) can't race on the same rule.
 UPDATE_LOCK = threading.Lock()
 
 def log(message):
@@ -110,6 +110,65 @@ def create_rule(family, port, cidr):
     rule_id = rule.get("id") if isinstance(rule, dict) else None
     log(f"RULE_CREATE_DONE family={family} port={port} new={cidr!r} rule={rule_id}")
     record_created_rule(rule_id, family, port, cidr)
+    return rule_id
+
+def delete_rule(rule_id):
+    run_scw(
+        "instance", "security-group", "delete-rule",
+        f"security-group-id={SECURITY_GROUP_ID}",
+        f"security-group-rule-id={rule_id}",
+        f"zone={ZONE}",
+    )
+
+def load_expirations():
+    try:
+        with open(RULE_EXPIRY_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+def save_expirations(data):
+    tmp = f"{RULE_EXPIRY_FILE}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    os.replace(tmp, RULE_EXPIRY_FILE)
+
+def set_expiry(rule_id, family, port, days):
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat(timespec="seconds")
+    data = load_expirations()
+    data[rule_id] = {"expires_at": expires_at, "family": family, "port": port}
+    save_expirations(data)
+    log(f"RULE_EXPIRY_SET rule={rule_id} family={family} port={port} expires_at={expires_at}")
+
+def sweep_expired():
+    now = datetime.now(timezone.utc)
+    with UPDATE_LOCK:
+        data = load_expirations()
+        remaining = {}
+        for rule_id, info in data.items():
+            try:
+                expires_at = datetime.fromisoformat(info["expires_at"])
+            except (KeyError, ValueError):
+                continue
+            if expires_at > now:
+                remaining[rule_id] = info
+                continue
+            try:
+                delete_rule(rule_id)
+                log(f"RULE_EXPIRE_DONE rule={rule_id} family={info.get('family')} port={info.get('port')}")
+            except Exception as exc:
+                log(f"RULE_EXPIRE_FAILED rule={rule_id} error={exc!r}")
+                remaining[rule_id] = info  # retry on the next sweep
+        if remaining != data:
+            save_expirations(remaining)
+
+def expire_loop():
+    while True:
+        time.sleep(RULE_EXPIRY_INTERVAL)
+        try:
+            sweep_expired()
+        except Exception as exc:
+            log(f"RULE_EXPIRE_SWEEP_FAILED error={exc!r}")
 
 def update_rule(rule_id, family, port, old_cidr, new_cidr):
     log(f"RULE_UPDATE_START family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
@@ -122,18 +181,25 @@ def update_rule(rule_id, family, port, old_cidr, new_cidr):
     )
     log(f"RULE_UPDATE_DONE family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
 
-def ensure_rule(rules, family, port, desired_cidr):
+def ensure_rule(rules, family, port, desired_cidr, days):
     # Look up before creating so repeat visits update the same rule instead of piling up new ones.
     rule = find_rule(rules, family, port)
     if rule is None:
-        create_rule(family, port, desired_cidr)
-        return f"IPv{family} port {port}: nouvelle règle -> {desired_cidr}"
-    current_cidr = rule.get("ip_range")
-    if current_cidr != desired_cidr:
-        update_rule(rule["id"], family, port, current_cidr, desired_cidr)
-        return f"IPv{family} port {port}: {current_cidr} -> {desired_cidr}"
-    log(f"RULE_NO_CHANGE family={family} port={port} rule={rule['id']}")
-    return None
+        rule_id = create_rule(family, port, desired_cidr)
+        message = f"IPv{family} port {port}: nouvelle règle -> {desired_cidr}"
+    else:
+        rule_id = rule["id"]
+        current_cidr = rule.get("ip_range")
+        if current_cidr != desired_cidr:
+            update_rule(rule_id, family, port, current_cidr, desired_cidr)
+            message = f"IPv{family} port {port}: {current_cidr} -> {desired_cidr}"
+        else:
+            log(f"RULE_NO_CHANGE family={family} port={port} rule={rule_id}")
+            message = None
+    if days is not None:
+        set_expiry(rule_id, family, port, days)
+        message = (message or f"IPv{family} port {port}: inchangé") + f" (expire dans {days}j)"
+    return message
 
 def validate_ip(value, version):
     if not isinstance(value, str) or len(value) > 100:
@@ -145,14 +211,27 @@ def validate_ip(value, version):
 
 def validate_port(value):
     if value is None or value == "":
-        return DEFAULT_PORT
+        raise ValueError("port is required")
     try:
         port = int(value)
     except (TypeError, ValueError):
         raise ValueError("invalid port")
-    if port not in ALLOWED_PORTS:
-        raise ValueError(f"port not allowed: {port}")
+    if not (1 <= port <= 65535):
+        raise ValueError("port out of range")
+    if port in FORBIDDEN_PORTS:
+        raise ValueError(f"port forbidden: {port}")
     return port
+
+def validate_days(value):
+    if value is None or value == "":
+        return None
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("invalid days")
+    if not (1 <= days <= MAX_DAYS):
+        raise ValueError(f"days must be between 1 and {MAX_DAYS}")
+    return days
 
 def page():
     return """<!doctype html>
@@ -164,15 +243,16 @@ def page():
 <body><h1>Scaleway IP updater</h1><p id="status">Détection des adresses IP…</p>
 <script>
 (async()=>{const s=document.getElementById("status");try{
-const port=new URLSearchParams(location.search).get("port");
+const params=new URLSearchParams(location.search);
+const port=params.get("port"),days=params.get("days");
 const [a,b]=await Promise.all([
 fetch("https://api4.ipify.org?format=json",{cache:"no-store"}),
 fetch("https://api6.ipify.org?format=json",{cache:"no-store"})
 ]);
 if(!a.ok||!b.ok)throw new Error("ipify n'a pas répondu correctement");
 const [{ip:ipv4},{ip:ipv6}]=await Promise.all([a.json(),b.json()]);
-s.textContent="IPv4 : "+ipv4+"\\nIPv6 : "+ipv6+"\\nPort : "+(port||"(défaut)")+"\\n\\nMise à jour du Security Group…";
-const r=await fetch(location.pathname+"/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ipv4,ipv6,port}),cache:"no-store"});
+s.textContent="IPv4 : "+ipv4+"\\nIPv6 : "+ipv6+"\\nPort : "+(port||"(manquant -- ajoutez ?port=)")+(days?"\\nDurée : "+days+"j":"")+"\\n\\nMise à jour du Security Group…";
+const r=await fetch(location.pathname+"/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ipv4,ipv6,port,days}),cache:"no-store"});
 const d=await r.json();if(!r.ok)throw new Error(d.error||"Erreur serveur");
 s.textContent="IPv4 : "+ipv4+"/32\\nIPv6 : "+ipv6+"/128\\nPort : "+d.port+"\\n\\n"+d.message;
 }catch(e){s.textContent="Erreur : "+e.message}})();
@@ -221,13 +301,14 @@ class Handler(BaseHTTPRequestHandler):
             ipv4 = validate_ip(payload.get("ipv4"), 4)
             ipv6 = validate_ip(payload.get("ipv6"), 6)
             port = validate_port(payload.get("port"))
+            days = validate_days(payload.get("days"))
             desired_v4, desired_v6 = f"{ipv4}/32", f"{ipv6}/128"
-            log(f"UPDATE_START sg={SECURITY_GROUP_ID} port={port} ipv4={desired_v4!r} ipv6={desired_v6!r}")
+            log(f"UPDATE_START sg={SECURITY_GROUP_ID} port={port} days={days} ipv4={desired_v4!r} ipv6={desired_v6!r}")
             with UPDATE_LOCK:
                 rules = list_rules()
                 changed = [c for c in (
-                    ensure_rule(rules, 4, port, desired_v4),
-                    ensure_rule(rules, 6, port, desired_v6),
+                    ensure_rule(rules, 4, port, desired_v4, days),
+                    ensure_rule(rules, 6, port, desired_v6, days),
                 ) if c]
             if changed:
                 message = "Mise à jour effectuée :\n" + "\n".join(changed)
@@ -235,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 message = "Aucune modification : les deux IP sont déjà à jour."
                 log(f"UPDATE_DONE changed=0 port={port}")
-            self.send_json(200, {"ok": True, "ipv4": desired_v4, "ipv6": desired_v6, "port": port,
+            self.send_json(200, {"ok": True, "ipv4": desired_v4, "ipv6": desired_v6, "port": port, "days": days,
                                  "changed": bool(changed), "message": message})
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             log(f"UPDATE_INVALID error={str(exc)!r}")
@@ -246,5 +327,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     log(f"START host={HOST!r} port={PORT} zone={ZONE!r} sg={SECURITY_GROUP_ID!r}")
-    log(f"ALLOWED_PORTS={sorted(ALLOWED_PORTS)!r} default={DEFAULT_PORT} created_rules_log={CREATED_RULES_LOG!r}")
+    log(f"FORBIDDEN_PORTS={sorted(FORBIDDEN_PORTS)!r} created_rules_log={CREATED_RULES_LOG!r}")
+    log(f"MAX_DAYS={MAX_DAYS} rule_expiry_file={RULE_EXPIRY_FILE!r} expiry_interval={RULE_EXPIRY_INTERVAL}s")
+    threading.Thread(target=expire_loop, daemon=True).start()
     ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()

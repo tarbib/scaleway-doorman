@@ -27,6 +27,7 @@ USER appuser
 
 ENV SCW_BIN=/usr/local/bin/scw
 ENV CREATED_RULES_LOG=/data/created_rules.log
+ENV RULE_EXPIRY_FILE=/data/rule_expirations.json
 
 EXPOSE 8080
 CMD ["python3", "app.py"]
