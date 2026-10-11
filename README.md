@@ -1,7 +1,7 @@
-# Scaleway Dynamic IP Updater
+# Scaleway Doorman
 
 Docker service that gets the browser's public IPv4/IPv6 through ipify and points
-a Scaleway Security Group rule at it, for a chosen port.
+one or more Scaleway Security Group rules at it, for a chosen port.
 
 ## Usage
 
@@ -15,6 +15,24 @@ This is the "I'm at a friend's house and need in" flow: open the bookmarked
 URL for whichever port you need that day and the matching IPv4/IPv6 rule
 gets repointed at your current IP in a couple seconds. Any port works
 *except* the ones listed in `FORBIDDEN_PORTS`.
+
+`SECURITY_GROUP_ID` can list several groups, comma-separated -- the same
+request then updates all of them (same port, same IP, same `days`). The URL
+token is just that same list, so with
+`SECURITY_GROUP_ID=sg-aaa,sg-bbb` the link is
+`https://your-domain/sg-aaa,sg-bbb?port=3389`. See `.env.example` for details.
+
+This only works because one process has exactly one `SCW_DEFAULT_ZONE`, one
+set of Scaleway credentials/project, and one `FORBIDDEN_PORTS`/`MAX_DAYS`
+policy -- those are process-wide, not per-group. So the groups listed in
+`SECURITY_GROUP_ID` must all live in the same zone and be reachable with the
+same credentials, and they all get the same port/IP/days/policy applied on
+every request; there's no way to target a subset of the list or give one
+group different rules than another. Different region, different Scaleway
+project, or different policy is **not** supported within one instance --
+that needs a second, fully separate deployment (its own `.env`, its own
+`docker-compose` service, its own volume, its own URL/path) rather than a
+second entry in `SECURITY_GROUP_ID`.
 
 The first time a given port is used, its IPv4 and IPv6 rules are created
 (`protocol=TCP`, `direction=inbound`, `action=accept`) and their ID is
@@ -38,7 +56,7 @@ that moment, even if your IP hasn't changed.
 ## Logs
 
 ```bash
-docker compose logs -f scaleway-ip-updater
+docker compose logs -f scaleway-doorman
 ```
 
 The application logs startup, page access, detected IPs, current/desired rule
@@ -91,7 +109,7 @@ pending expiry lives in `rule_expirations.json` until the sweep removes it.
 
 | Variable            | Required | Description                                              |
 |---------------------|----------|------------------------------------------------------------|
-| `SECURITY_GROUP_ID`  | yes      | Target Scaleway security group, also the URL token        |
+| `SECURITY_GROUP_ID`  | yes      | Target Scaleway security group(s), comma-separated for several; also the URL token |
 | `FORBIDDEN_PORTS`    | no       | Comma-separated ports/ranges this endpoint may never open, e.g. `22,3306,3389`. Empty means no restriction |
 | `MAX_DAYS`           | no       | Upper bound accepted for `?days=`. Defaults to `30`        |
 | `CREATED_RULES_LOG`  | no       | Path to the created-rules audit file. Defaults to `created_rules.log` |
@@ -118,8 +136,8 @@ verified against its published checksum at build time; bump it with
 
 ## Security
 
-`SECURITY_GROUP_ID` identifies the target group but is not a secret. Protect the
-public endpoint with authentication at your reverse proxy if appropriate.
+`SECURITY_GROUP_ID` identifies the target group(s) but is not a secret. Protect
+the public endpoint with authentication at your reverse proxy if appropriate.
 Do not commit `.env`.
 
 `FORBIDDEN_PORTS` is a denylist, not an allowlist: by default every port

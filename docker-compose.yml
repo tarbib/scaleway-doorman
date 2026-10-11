@@ -1,5 +1,5 @@
 services:
-  scaleway-ip-updater:
+  scaleway-doorman:
     build: .
     restart: unless-stopped
     env_file: .env
