@@ -33,7 +33,6 @@ Revisiting from the same IP reuses its rule (and resets the `days` countdown).
 | `RULE_EXPIRY_FILE` | no | `/data/rule_expirations.json` | Pending expirations; must be on persistent storage |
 | `LISTEN_HOST` | no | `0.0.0.0` | HTTP listen address |
 | `LISTEN_PORT` | no | `8080` | HTTP listen port |
-| `SCW_BIN` | no | `/usr/local/bin/scw` | Path to the `scw` binary |
 
 All listed security groups share the same zone, credentials and policy. A
 group in another zone or project needs a separate deployment.

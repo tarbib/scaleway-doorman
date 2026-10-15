@@ -18,7 +18,7 @@ if not SECURITY_GROUP_IDS:
 # var with "id1, id2" doesn't force a literal space into the URL.
 URL_TOKEN = ",".join(SECURITY_GROUP_IDS)
 ZONE = os.getenv("SCW_DEFAULT_ZONE", "fr-par-1")
-SCW = os.getenv("SCW_BIN", "/usr/bin/scw")
+SCW = os.getenv("SCW_BIN", "/usr/local/bin/scw")
 MAX_BODY = 4096
 
 def parse_port_spec(spec):

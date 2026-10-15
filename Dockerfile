@@ -25,7 +25,6 @@ RUN useradd --no-create-home --shell /usr/sbin/nologin appuser \
     && mkdir -p /data && chown appuser:appuser /data
 USER appuser
 
-ENV SCW_BIN=/usr/local/bin/scw
 ENV CREATED_RULES_LOG=/data/created_rules.log
 ENV RULE_EXPIRY_FILE=/data/rule_expirations.json
 
