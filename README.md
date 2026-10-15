@@ -137,11 +137,12 @@ On the server you only need `docker-compose.yml` and `.env`:
 ```bash
 cp .env.example .env
 chmod 600 .env
-docker compose pull
 docker compose up -d
 ```
 
-To deploy a new version: `docker compose pull && docker compose up -d`.
+The compose service has no `build:` and uses `pull_policy: always`, so every
+`docker compose up -d` pulls the image from GHCR and never builds locally --
+that same command also deploys new versions.
 To pin a version, set `DOORMAN_IMAGE=ghcr.io/tarbib/scaleway-security-group-update:1.2.0`
 (in the shell or in a `.env` next to the compose file).
 
