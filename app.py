@@ -239,30 +239,178 @@ def validate_days(value):
         raise ValueError(f"days must be between 1 and {MAX_DAYS}")
     return days
 
+# Styling follows Scaleway's Ultraviolet design system (console light/dark
+# theme tokens), inlined as CSS variables since the page has no build step.
 def page():
-    return """<!doctype html>
+    return r"""<!doctype html>
 <html lang="fr">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Scaleway IP updater</title>
-<style>body{font-family:system-ui,sans-serif;max-width:680px;margin:60px auto;padding:0 20px;line-height:1.5}#status{white-space:pre-wrap}</style>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Scaleway Doorman</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+:root{
+  --bg:#f9f9fa;--surface:#ffffff;--border:#d9dadd;--border-weak:#e9eaeb;
+  --text:#3f4250;--text-strong:#222638;--text-weak:#727683;
+  --primary:#8c40ef;--primary-text:#641cb3;--primary-bg:#f1eefc;
+  --success-text:#22674e;--success-bg:#daf6ec;--success-border:#2c8564;
+  --danger-text:#b3144d;--danger-bg:#ffebf2;--danger-border:#e51963;
+  --warning-text:#7c5400;--warning-bg:#fff6e6;--warning-border:#7c5400;
+  --info-text:#005da3;--info-bg:#e0f2ff;--info-border:#005da3;
+  --shadow:0 0 2px 0 #22263829,0 2px 4px 0 #2226381f;
+  --font:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --font-heading:"Space Grotesk","Century Gothic",Futura,sans-serif;
+  --font-code:"JetBrains Mono",JetBrains,Consolas,Monaco,"Andale Mono",monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#151a2d;--surface:#1b2033;--border:#484b5a;--border-weak:#353948;
+  --text:#b8bac0;--text-strong:#ffffff;--text-weak:#7e8291;
+  --primary:#8d40ee;--primary-text:#bf96f8;--primary-bg:#2d1c51;
+  --success-text:#3cb589;--success-bg:#0e2b21;--success-border:#3cb589;
+  --danger-text:#ff72a5;--danger-bg:#4e0921;--danger-border:#ff72a5;
+  --warning-text:#ffbf3d;--warning-bg:#3a2a07;--warning-border:#ffbf3d;
+  --info-text:#71c2ff;--info-bg:#0b2a45;--info-border:#71c2ff;
+  --shadow:0 0 2px 0 #0c0f1a99,0 2px 4px 0 #0c0f1a66;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 1rem/1.5rem var(--font);-webkit-font-smoothing:antialiased}
+main{max-width:640px;margin:0 auto;padding:48px 16px}
+header{display:flex;align-items:center;gap:16px;margin-bottom:32px}
+.logo{flex:none;width:48px;height:48px;border-radius:.5rem;display:grid;place-items:center;
+  background:linear-gradient(151deg,#792dd4 0%,#3d1862 45%,#151a2d 100%);color:#fff}
+h1{margin:0;font:500 1.5625rem/2rem var(--font-heading);color:var(--text-strong)}
+.subtitle{margin:0;color:var(--text-weak);font-size:.875rem;line-height:1.25rem}
+.card{background:var(--surface);border:1px solid var(--border-weak);border-radius:.5rem;box-shadow:var(--shadow);overflow:hidden}
+.card h2{margin:0;padding:16px 24px;font:600 1rem/1.5rem var(--font);color:var(--text-strong);border-bottom:1px solid var(--border-weak)}
+dl{margin:0;padding:8px 24px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--border-weak)}
+.row:last-child{border-bottom:0}
+dt{color:var(--text-weak);font-size:.875rem}
+dd{margin:0;min-width:0;text-align:right;color:var(--text-strong);font:500 .875rem/1.25rem var(--font-code);overflow-wrap:anywhere}
+.chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px}
+.chip{display:inline-block;padding:0 8px;border-radius:.25rem;background:var(--primary-bg);color:var(--primary-text);font:500 .75rem/1.5rem var(--font-code)}
+.muted{color:var(--text-weak);font-family:var(--font);font-weight:400}
+.alert{display:flex;gap:12px;margin-top:24px;padding:16px;border-radius:.5rem;border:1px solid var(--a-border);background:var(--a-bg);color:var(--text)}
+.alert .icon{flex:none;width:20px;height:20px;color:var(--a-text);margin-top:2px}
+.alert strong{display:block;color:var(--a-text);font-weight:600}
+.alert ul{margin:8px 0 0;padding:0;list-style:none;display:grid;gap:4px}
+.alert li{font:400 .8125rem/1.25rem var(--font-code);overflow-wrap:anywhere}
+.alert p{margin:4px 0 0;font-size:.875rem}
+.alert code{font-family:var(--font-code);background:var(--a-bg);padding:0 4px;border-radius:.25rem}
+.info{--a-text:var(--info-text);--a-bg:var(--info-bg);--a-border:var(--info-border)}
+.success{--a-text:var(--success-text);--a-bg:var(--success-bg);--a-border:var(--success-border)}
+.danger{--a-text:var(--danger-text);--a-bg:var(--danger-bg);--a-border:var(--danger-border)}
+.warning{--a-text:var(--warning-text);--a-bg:var(--warning-bg);--a-border:var(--warning-border)}
+.neutral{--a-text:var(--text-strong);--a-bg:var(--surface);--a-border:var(--border)}
+.spin{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+footer{margin-top:24px;text-align:center;color:var(--text-weak);font-size:.75rem;line-height:1rem}
+@media (max-width:480px){.row{flex-direction:column;align-items:flex-start;gap:4px}dd{text-align:left}.chips{justify-content:flex-start}}
+</style>
 </head>
-<body><h1>Scaleway IP updater</h1><p id="status">Détection des adresses IP…</p>
+<body>
+<main>
+  <header>
+    <div class="logo" aria-hidden="true">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3v6c0 4.5-3.4 8.3-8 9-4.6-.7-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>
+    </div>
+    <div>
+      <h1>Scaleway Doorman</h1>
+      <p class="subtitle">Ouvre l'accès des Security Groups à votre IP actuelle</p>
+    </div>
+  </header>
+
+  <section class="card" aria-labelledby="summary-title">
+    <h2 id="summary-title">Récapitulatif</h2>
+    <dl>
+      <div class="row"><dt>IPv4</dt><dd id="ipv4"><span class="muted">Détection…</span></dd></div>
+      <div class="row"><dt>IPv6</dt><dd id="ipv6"><span class="muted">Détection…</span></dd></div>
+      <div class="row"><dt>Port TCP</dt><dd id="port"></dd></div>
+      <div class="row"><dt>Durée</dt><dd id="days"></dd></div>
+      <div class="row"><dt>Security groups</dt><dd><div class="chips" id="sgs"></div></dd></div>
+    </dl>
+  </section>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <footer>Scaleway Doorman · les IP sont détectées via ipify</footer>
+</main>
 <script>
-(async()=>{const s=document.getElementById("status");try{
-const params=new URLSearchParams(location.search);
-const port=params.get("port"),days=params.get("days");
-const [a,b]=await Promise.all([
-fetch("https://api4.ipify.org?format=json",{cache:"no-store"}),
-fetch("https://api6.ipify.org?format=json",{cache:"no-store"})
-]);
-if(!a.ok||!b.ok)throw new Error("ipify n'a pas répondu correctement");
-const [{ip:ipv4},{ip:ipv6}]=await Promise.all([a.json(),b.json()]);
-s.textContent="IPv4 : "+ipv4+"\\nIPv6 : "+ipv6+"\\nPort : "+(port||"(manquant -- ajoutez ?port=)")+(days?"\\nDurée : "+days+"j":"")+"\\n\\nMise à jour du Security Group…";
-const r=await fetch(location.pathname+"/update",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ipv4,ipv6,port,days}),cache:"no-store"});
-const d=await r.json();if(!r.ok)throw new Error(d.error||"Erreur serveur");
-s.textContent="IPv4 : "+ipv4+"/32\\nIPv6 : "+ipv6+"/128\\nPort : "+d.port+"\\n\\n"+d.message;
-}catch(e){s.textContent="Erreur : "+e.message}})();
-</script></body></html>"""
+(() => {
+  const $ = id => document.getElementById(id);
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  const ICONS = {
+    info: '<circle cx="12" cy="12" r="9" opacity=".25"/><path d="M21 12a9 9 0 0 0-9-9"/>',
+    success: '<circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/>',
+    neutral: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
+    warning: '<path d="M12 3l10 18H2L12 3z"/><path d="M12 10v4M12 17.5v.01"/>',
+    danger: '<circle cx="12" cy="12" r="9"/><path d="M15 9l-6 6M9 9l6 6"/>',
+  };
+  const setText = (id, text, muted) => { const n = $(id); n.replaceChildren(muted ? el("span", "muted", text) : document.createTextNode(text)); };
+
+  function alert(kind, title, lines, extra) {
+    const box = el("div", "alert " + kind);
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("fill", "none"); svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2"); svg.setAttribute("stroke-linecap", "round"); svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("class", "icon" + (kind === "info" ? " spin" : "")); svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = ICONS[kind];
+    const body = el("div");
+    body.append(el("strong", null, title));
+    if (lines && lines.length) { const ul = el("ul"); lines.forEach(l => ul.append(el("li", null, l))); body.append(ul); }
+    if (extra) body.append(extra);
+    box.append(svg, body);
+    $("status").replaceChildren(box);
+  }
+
+  const params = new URLSearchParams(location.search);
+  const port = params.get("port"), days = params.get("days");
+  const path = location.pathname.replace(/\/+$/, "");
+  path.slice(1).split(",").filter(Boolean).forEach(sg => $("sgs").append(el("span", "chip", decodeURIComponent(sg))));
+  setText("port", port || "manquant", !port);
+  setText("days", days ? days + " jour" + (days === "1" ? "" : "s") : "Permanente", !days);
+
+  if (!port) {
+    const hint = el("p"); hint.append("Ajoutez ", el("code", null, "?port=3389"), " à l'URL (et éventuellement ", el("code", null, "&days=2"), ").");
+    alert("warning", "Port manquant", null, hint);
+    setText("ipv4", "—", true); setText("ipv6", "—", true);
+    return;
+  }
+
+  (async () => {
+    try {
+      alert("info", "Détection de vos adresses IP…");
+      const [a, b] = await Promise.all([
+        fetch("https://api4.ipify.org?format=json", { cache: "no-store" }),
+        fetch("https://api6.ipify.org?format=json", { cache: "no-store" }),
+      ]);
+      if (!a.ok || !b.ok) throw new Error("ipify n'a pas répondu correctement");
+      const [{ ip: ipv4 }, { ip: ipv6 }] = await Promise.all([a.json(), b.json()]);
+      setText("ipv4", ipv4); setText("ipv6", ipv6);
+
+      alert("info", "Mise à jour des Security Groups…");
+      const r = await fetch(path + "/update", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ipv4, ipv6, port, days }), cache: "no-store",
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Erreur serveur");
+      setText("ipv4", d.ipv4); setText("ipv6", d.ipv6); setText("port", String(d.port));
+      const [title, ...lines] = d.message.split("\n");
+      alert(d.changed || d.days ? "success" : "neutral", title.replace(/\s*:\s*$/, ""), lines);
+    } catch (e) {
+      alert("danger", "Erreur", null, el("p", null, e.message));
+    }
+  })();
+})();
+</script>
+</body>
+</html>"""
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "scaleway-doorman/1.1"

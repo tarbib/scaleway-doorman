@@ -122,17 +122,41 @@ pending expiry lives in `rule_expirations.json` until the sweep removes it.
 
 ## Run
 
+The image is built by GitHub Actions (`.github/workflows/docker.yml`) and
+published to `ghcr.io/tarbib/scaleway-security-group-update` for
+`linux/amd64` and `linux/arm64`:
+
+| Tag          | Published on                          |
+|--------------|---------------------------------------|
+| `latest`     | every push to `main`                  |
+| `X.Y.Z`, `X.Y` | pushing a git tag `vX.Y.Z`          |
+| `sha-<short>` | every build                          |
+
+On the server you only need `docker-compose.yml` and `.env`:
+
 ```bash
 cp .env.example .env
 chmod 600 .env
-docker compose build
+docker compose pull
 docker compose up -d
+```
+
+To deploy a new version: `docker compose pull && docker compose up -d`.
+To pin a version, set `DOORMAN_IMAGE=ghcr.io/tarbib/scaleway-security-group-update:1.2.0`
+(in the shell or in a `.env` next to the compose file).
+
+If the package is private, log in once on the server with a GitHub token
+that has `read:packages`:
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u tarbib --password-stdin
 ```
 
 Put an HTTPS reverse proxy in front of `127.0.0.1:8080` (that's what the
 compose file binds to). The image bundles a pinned `scw` CLI release,
-verified against its published checksum at build time; bump it with
-`docker compose build --build-arg SCW_VERSION=x.y.z`.
+verified against its published checksum at build time; bump `SCW_VERSION`
+in the Dockerfile, or build locally with
+`docker build --build-arg SCW_VERSION=x.y.z -t ghcr.io/tarbib/scaleway-security-group-update:latest .`.
 
 ## Security
 

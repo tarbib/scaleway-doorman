@@ -1,6 +1,8 @@
 services:
   scaleway-doorman:
-    build: .
+    # Published by .github/workflows/docker.yml. Pin a tag (e.g. :1.2.0 or
+    # :sha-abc1234) instead of :latest for reproducible deploys.
+    image: ${DOORMAN_IMAGE:-ghcr.io/tarbib/scaleway-security-group-update:latest}
     restart: unless-stopped
     env_file: .env
     ports:
