@@ -79,21 +79,14 @@ def _rule_port(value):
     except (TypeError, ValueError):
         return None
 
-def find_rule(rules, family, port):
+def find_rule(rules, port, cidr):
     for rule in rules:
         if rule.get("direction") != "inbound" or rule.get("protocol") != "TCP":
             continue
         if _rule_port(rule.get("dest_port_from")) != port or _rule_port(rule.get("dest_port_to")) != port:
             continue
-        ip_range = rule.get("ip_range")
-        if not ip_range:
-            continue
-        try:
-            if ipaddress.ip_network(ip_range, strict=False).version != family:
-                continue
-        except ValueError:
-            continue
-        return rule
+        if rule.get("ip_range") == cidr:
+            return rule
     return None
 
 def record_created_rule(sg_id, rule_id, family, port, cidr):
@@ -176,32 +169,16 @@ def expire_loop():
         except Exception as exc:
             log(f"RULE_EXPIRE_SWEEP_FAILED error={exc!r}")
 
-def update_rule(sg_id, rule_id, family, port, old_cidr, new_cidr):
-    log(f"RULE_UPDATE_START sg={sg_id} family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
-    run_scw(
-        "instance", "security-group", "update-rule",
-        f"security-group-id={sg_id}",
-        f"security-group-rule-id={rule_id}",
-        f"ip-range={new_cidr}",
-        f"zone={ZONE}",
-    )
-    log(f"RULE_UPDATE_DONE sg={sg_id} family={family} port={port} rule={rule_id} old={old_cidr!r} new={new_cidr!r}")
-
 def ensure_rule(sg_id, rules, family, port, desired_cidr, days):
-    # Look up before creating so repeat visits update the same rule instead of piling up new ones.
-    rule = find_rule(rules, family, port)
+    # Only reuse a rule for this exact port + IP; any other IP gets its own new rule.
+    rule = find_rule(rules, port, desired_cidr)
     if rule is None:
         rule_id = create_rule(sg_id, family, port, desired_cidr)
         message = f"[{sg_id}] IPv{family} port {port}: nouvelle règle -> {desired_cidr}"
     else:
         rule_id = rule["id"]
-        current_cidr = rule.get("ip_range")
-        if current_cidr != desired_cidr:
-            update_rule(sg_id, rule_id, family, port, current_cidr, desired_cidr)
-            message = f"[{sg_id}] IPv{family} port {port}: {current_cidr} -> {desired_cidr}"
-        else:
-            log(f"RULE_NO_CHANGE sg={sg_id} family={family} port={port} rule={rule_id}")
-            message = None
+        log(f"RULE_NO_CHANGE sg={sg_id} family={family} port={port} rule={rule_id}")
+        message = None
     if days is not None:
         set_expiry(sg_id, rule_id, family, port, days)
         message = (message or f"[{sg_id}] IPv{family} port {port}: inchangé") + f" (expire dans {days}j)"
