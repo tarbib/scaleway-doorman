@@ -123,7 +123,7 @@ pending expiry lives in `rule_expirations.json` until the sweep removes it.
 ## Run
 
 The image is built by GitHub Actions (`.github/workflows/docker.yml`) and
-published to `ghcr.io/tarbib/scaleway-security-group-update` for
+published to `ghcr.io/tarbib/scaleway-doorman` for
 `linux/amd64` and `linux/arm64`:
 
 | Tag          | Published on                          |
@@ -143,7 +143,7 @@ docker compose up -d
 The compose service has no `build:` and uses `pull_policy: always`, so every
 `docker compose up -d` pulls the image from GHCR and never builds locally --
 that same command also deploys new versions.
-To pin a version, set `DOORMAN_IMAGE=ghcr.io/tarbib/scaleway-security-group-update:1.2.0`
+To pin a version, set `DOORMAN_IMAGE=ghcr.io/tarbib/scaleway-doorman:1.2.0`
 (in the shell or in a `.env` next to the compose file).
 
 If the package is private, log in once on the server with a GitHub token
@@ -157,7 +157,7 @@ Put an HTTPS reverse proxy in front of `127.0.0.1:8080` (that's what the
 compose file binds to). The image bundles a pinned `scw` CLI release,
 verified against its published checksum at build time; bump `SCW_VERSION`
 in the Dockerfile, or build locally with
-`docker build --build-arg SCW_VERSION=x.y.z -t ghcr.io/tarbib/scaleway-security-group-update:latest .`.
+`docker build --build-arg SCW_VERSION=x.y.z -t ghcr.io/tarbib/scaleway-doorman:latest .`.
 
 ## Security
 

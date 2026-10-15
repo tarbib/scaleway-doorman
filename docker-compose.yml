@@ -2,7 +2,7 @@ services:
   scaleway-doorman:
     # Published by .github/workflows/docker.yml. Pin a tag (e.g. :1.2.0 or
     # :sha-abc1234) instead of :latest for reproducible deploys.
-    image: ${DOORMAN_IMAGE:-ghcr.io/tarbib/scaleway-security-group-update:latest}
+    image: ${DOORMAN_IMAGE:-ghcr.io/tarbib/scaleway-doorman:latest}
     # Always pull from the registry on `up`; this service is never built locally.
     pull_policy: always
     restart: unless-stopped
