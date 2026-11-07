@@ -8,7 +8,8 @@ https://your-domain/<SECURITY_GROUP_ID>?port=3389&days=2
 ```
 
 The page detects your public IPv4/IPv6 and points an inbound TCP rule for
-that port at it, in every security group listed in `SECURITY_GROUP_ID`.
+that port at it, in every security group listed in `SECURITY_GROUP_ID`. A
+family your network doesn't have (e.g. no IPv6) is simply skipped.
 
 - `port` (required): the port to open. Ports in `FORBIDDEN_PORTS` are refused.
 - `days` (optional, 1 to `MAX_DAYS`): the rule is deleted automatically after

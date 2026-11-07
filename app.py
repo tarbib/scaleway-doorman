@@ -185,6 +185,9 @@ def ensure_rule(sg_id, rules, family, port, desired_cidr, days):
     return message
 
 def validate_ip(value, version):
+    """Validate an IP of the given family; None/empty means the client has none."""
+    if value is None or value == "":
+        return None
     if not isinstance(value, str) or len(value) > 100:
         raise ValueError("invalid IP")
     ip = ipaddress.ip_address(value.strip())
@@ -362,13 +365,15 @@ footer{margin-top:24px;text-align:center;color:var(--text-weak);font-size:.75rem
   (async () => {
     try {
       alert("info", "Détection de vos adresses IP…");
-      const [a, b] = await Promise.all([
-        fetch("https://api4.ipify.org?format=json", { cache: "no-store" }),
-        fetch("https://api6.ipify.org?format=json", { cache: "no-store" }),
+      // Each family is optional: a network without IPv6 (or IPv4) makes that lookup fail outright.
+      const lookup = url => fetch(url, { cache: "no-store" })
+        .then(r => r.ok ? r.json() : null).then(d => d && d.ip || null).catch(() => null);
+      const [ipv4, ipv6] = await Promise.all([
+        lookup("https://api4.ipify.org?format=json"),
+        lookup("https://api6.ipify.org?format=json"),
       ]);
-      if (!a.ok || !b.ok) throw new Error("ipify n'a pas répondu correctement");
-      const [{ ip: ipv4 }, { ip: ipv6 }] = await Promise.all([a.json(), b.json()]);
-      setText("ipv4", ipv4); setText("ipv6", ipv6);
+      setText("ipv4", ipv4 || "non disponible", !ipv4); setText("ipv6", ipv6 || "non disponible", !ipv6);
+      if (!ipv4 && !ipv6) throw new Error("Impossible de joindre ipify pour détecter votre IP (bloqueur de contenu ?)");
 
       alert("info", "Mise à jour des Security Groups…");
       const r = await fetch(path + "/update", {
@@ -377,7 +382,8 @@ footer{margin-top:24px;text-align:center;color:var(--text-weak);font-size:.75rem
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Erreur serveur");
-      setText("ipv4", d.ipv4); setText("ipv6", d.ipv6); setText("port", String(d.port));
+      setText("ipv4", d.ipv4 || "non disponible", !d.ipv4); setText("ipv6", d.ipv6 || "non disponible", !d.ipv6);
+      setText("port", String(d.port));
       const [title, ...lines] = d.message.split("\n");
       alert(d.changed || d.days ? "success" : "neutral", title.replace(/\s*:\s*$/, ""), lines);
     } catch (e) {
@@ -431,23 +437,26 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             ipv4 = validate_ip(payload.get("ipv4"), 4)
             ipv6 = validate_ip(payload.get("ipv6"), 6)
+            if ipv4 is None and ipv6 is None:
+                raise ValueError("no IP address")
             port = validate_port(payload.get("port"))
             days = validate_days(payload.get("days"))
-            desired_v4, desired_v6 = f"{ipv4}/32", f"{ipv6}/128"
+            desired_v4 = f"{ipv4}/32" if ipv4 else None
+            desired_v6 = f"{ipv6}/128" if ipv6 else None
+            targets = [(family, cidr) for family, cidr in ((4, desired_v4), (6, desired_v6)) if cidr]
             log(f"UPDATE_START sgs={SECURITY_GROUP_IDS} port={port} days={days} ipv4={desired_v4!r} ipv6={desired_v6!r}")
             with UPDATE_LOCK:
                 changed = []
                 for sg_id in SECURITY_GROUP_IDS:
                     rules = list_rules(sg_id)
                     changed += [c for c in (
-                        ensure_rule(sg_id, rules, 4, port, desired_v4, days),
-                        ensure_rule(sg_id, rules, 6, port, desired_v6, days),
+                        ensure_rule(sg_id, rules, family, port, cidr, days) for family, cidr in targets
                     ) if c]
             if changed:
                 message = "Mise à jour effectuée :\n" + "\n".join(changed)
                 log(f"UPDATE_DONE changed={len(changed)} port={port}")
             else:
-                message = "Aucune modification : les deux IP sont déjà à jour."
+                message = "Aucune modification : les règles sont déjà à jour."
                 log(f"UPDATE_DONE changed=0 port={port}")
             self.send_json(200, {"ok": True, "ipv4": desired_v4, "ipv6": desired_v6, "port": port, "days": days,
                                  "changed": bool(changed), "message": message})
